@@ -1,4 +1,5 @@
 var storm = require('node-storm');
+var fs = require('fs');
 
 var sentenceSpout = (function(){
 
@@ -11,12 +12,11 @@ var sentenceSpout = (function(){
 
   var index = 0;
   return storm.spout(function(sync){
-    var that = this;
     setTimeout(function(){
-      self.emit([sentences[index]]);
+      this.emit([sentences[index]]);
       index = (index + 1) % sentences.length;
       sync();
-    }, 1)
+    }.bind(this), 1)
   }).declareOutputFields(["word"])
 })();
 
@@ -41,11 +41,26 @@ var counts = {};
 var reportBolt = (function(){
   return storm.basicbolt(function(data){
     var word = data.tuple[0];
-    counts[word] = counts[word] || 0;
-    counts[word] ++;
+    counts[word] = counts[word] || data.tuple[1];
   })
 })()
 
-setTimeout(function(){
-  console.log(JSON.stringify(counts))
-}, 5000)
+var builder = storm.topologybuilder();
+builder.setSpout('sentences', sentenceSpout);
+builder.setBolt('split_sentences', splitSentenceBolt, 8).shuffleGrouping('sentences');
+builder.setBolt('word_count', countBolt, 12).fieldsGrouping('split_sentences', ['word']);
+builder.setBolt('report', reportBolt).globalGrouping('word_count');
+
+var nimbus = process.argv[2];
+var options = {
+  config: {'topology.debug': true}
+}
+var topology = builder.createTopology()
+var cluster = storm.localcluster()
+cluster.submit(topology, options).then(function() {
+  return q.delay(500)
+}).finally(function() {
+  fs.writeFile('logs.txt', JSON.stringify(counts));
+  return cluster.shutdown()
+}).fail(console.error)
+
